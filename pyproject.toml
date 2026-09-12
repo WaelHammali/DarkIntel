@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "darkintel"
+version = "0.1.0"
+description = "Bridge connecting IntelForge's recon into VoidHawk's memory for CVSS-scored reports"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Wael Hammali" }]
+keywords = ["pentest", "osint", "security", "langgraph", "bridge"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "intelforge @ git+https://github.com/WaelHammali/IntelForge.git",
+    "voidhawk @ git+https://github.com/WaelHammali/VoidHawk.git",
+    "click>=8.1",
+    "langchain>=1,<2",
+    "langchain-anthropic>=1,<2",
+    "pydantic-settings>=2.3,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+darkintel = "darkintel.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/WaelHammali/DarkIntel"
+Repository = "https://github.com/WaelHammali/DarkIntel"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/darkintel"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["darkintel"]
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["darkintel"]
+mypy_path = "src"
+strict = false
+warn_unused_ignores = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "langchain.*", "watchtower.*", "intelforge.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
