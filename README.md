@@ -26,9 +26,12 @@ flowchart LR
         Planner --> Agents[Worker · Cleaner · Analyst\nLogic · Validator]
         Agents --> Report[CVSS-scored report\nPDF / HTML / Markdown]
     end
+
+    Agents -->|confirmed findings + real command history| Dragon[Dragon\nClaude-powered entry-point synthesis]
+    Dragon --> Narrative[Exploitation narrative\nexact commands only]
 ```
 
-**The bridge's job:** take IntelForge's structured JSON report and inject it into VoidHawk's ChromaDB-backed memory *before* a run starts, so VoidHawk's Planner agent never has to re-discover what IntelForge already found — it goes straight to validation, exploit reasoning and severity ranking.
+**The bridge's job:** take IntelForge's structured JSON report and inject it into VoidHawk's ChromaDB-backed memory *before* a run starts, so VoidHawk's Planner agent never has to re-discover what IntelForge already found — it goes straight to validation, exploit reasoning and severity ranking. Once VoidHawk's own Validator has confirmed which findings are real, **Dragon** (opt-in, Claude-powered) chains only the *confirmed* ones into a single ordered path to a foothold, citing only commands that were actually run — no new validation logic, just synthesis over trusted evidence.
 
 ## Why two frameworks instead of one
 
@@ -41,9 +44,33 @@ Keeping them separate lets each evolve independently; DarkIntel is the integrati
 
 `Python` · `LangGraph` · `LangChain` · `Ollama` · `ChromaDB` · `Sentence-Transformers` · `SQLite`
 
+## Usage
+
+```bash
+git clone git@github.com:WaelHammali/DarkIntel.git
+cd DarkIntel
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"   # also pulls IntelForge and VoidHawk from GitHub
+
+darkintel run <authorized-target> --report-format pdf
+```
+
+This runs IntelForge's recon, seeds the findings into VoidHawk's memory, lets VoidHawk's own
+Planner/Validator/reporting run starting at the scan phase (recon is skipped — IntelForge already
+did it), then hands VoidHawk's *confirmed* findings to **Dragon**: a Claude-powered stage that
+chains them into a concrete entry-point narrative, citing only commands that were actually run.
+Dragon is opt-in — set `DARKINTEL_LLM_DRAGON` (e.g. `anthropic:claude-opus-4-...`) and
+`ANTHROPIC_API_KEY` in `.env`, otherwise that stage is skipped cleanly.
+
+Neither IntelForge nor VoidHawk is modified — `darkintel` only depends on both and converts one
+side's output into the other's input.
+
 ## Status
 
-🚧 In development — the bridge logic (report → RAG memory ingestion) is being built. See [IntelForge](https://github.com/WaelHammali/IntelForge) and [VoidHawk](https://github.com/WaelHammali/VoidHawk) for the two frameworks it connects.
+✅ The bridge is implemented: `src/darkintel/bridge.py` (recon → memory → VoidHawk run) and
+`src/darkintel/dragon.py` (confirmed findings → entry-point narrative). See
+[IntelForge](https://github.com/WaelHammali/IntelForge) and
+[VoidHawk](https://github.com/WaelHammali/VoidHawk) for the two frameworks it connects.
 
 ## License
 
