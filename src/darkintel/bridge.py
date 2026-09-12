@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from intelforge.console.theme import good, status
 from intelforge.domain.models import CommandResult
 from intelforge.domain.state import TargetState
 from intelforge.graph.pipeline import run as run_intelforge
@@ -153,9 +154,11 @@ def _generate_reports(
 def run(target: str, *, report_format: str = "pdf") -> dict[str, Any]:
     """Run the whole bridge: IntelForge recon -> VoidHawk memory + graph -> Dragon."""
     # 1. IntelForge recon.
+    status(f"IntelForge — reconnaissance on {target}")
     state = TargetState(data_dir=settings.data_dir / "intelforge")
     state.set_target(target)
     run_intelforge(state, ScanOptions())
+    good("IntelForge recon complete")
 
     # 2. Seed VoidHawk's memory with what IntelForge found.
     memory = MemoryAgent(
@@ -201,76 +204,93 @@ def run(target: str, *, report_format: str = "pdf") -> dict[str, Any]:
     }
 
     # 4. Run VoidHawk's own graph (Planner/Worker/Cleaner/Analyst/Validator/Reporter).
-    graph = create_agent_graph()
-    validation_summary = ""
-    logged_titles: set[str] = set()
-    run_observations: list[dict[str, Any]] = []
-    run_findings: list[dict[str, Any]] = []
-
-    for event in graph.stream(
-        initial_state, config={"recursion_limit": voidhawk_config.recursion_limit}
-    ):
-        for _node_name, state_updates in event.items():
-            if "observations" in state_updates:
-                clean_res = state_updates.get("clean_result", {})
-                for obs in state_updates["observations"]:
-                    memory.log_observation(
-                        obs.get("target"),
-                        obs.get("tool"),
-                        obs.get("output"),
-                        clean_result=obs.get("clean_result") or clean_res,
-                    )
-                    run_observations.append(obs)
-
-            if "validated_findings" in state_updates:
-                for finding in state_updates["validated_findings"]:
-                    title = finding.get("title", "Unknown Finding")
-                    if title in logged_titles:
-                        continue
-                    logged_titles.add(title)
-                    memory.log_finding(
-                        target=finding.get("target", target),
-                        vulnerability=title,
-                        details=finding,
-                        severity=finding.get("severity", "Unknown"),
-                        cvss_score=float(finding.get("cvss_score", 0) or 0),
-                        validated=True,
-                    )
-                    run_findings.append(finding)
-
-            if state_updates.get("validation_summary"):
-                validation_summary = state_updates["validation_summary"]
-
-    memory.close_session(session_id)
-
-    # 5. VoidHawk's own reporters — CVSS-scored PDF/HTML/Markdown.
-    report_paths = _generate_reports(
-        voidhawk_config.memory_agent_db_path,
-        f"darkintel_report_{session_id[:8]}",
-        report_format,
-        validation_summary,
-    )
-
-    # 6. Dragon — chains VoidHawk's confirmed findings into an entry-point narrative.
-    # A provider/network failure here must not discard the reports already
-    # written in step 5, so this is deliberately broader than the parse-error
-    # handling inside dragon.synthesize itself.
+    # Everything from here on holds an open MemoryAgent connection, so it's
+    # wrapped in try/finally to guarantee it's released even if a node raises
+    # something VoidHawk's own per-node error handling didn't already catch.
     try:
-        attack_path = dragon.synthesize(
-            dragon_model(),
-            confirmed_findings=run_findings,
-            command_history=_format_command_history(run_observations),
-            nmap_summary=state.get_nmap_summary(),
-        )
-    except Exception as exc:
-        attack_path = {
-            "entry_point": "",
-            "attack_narrative": f"Dragon failed: {exc}",
-            "steps": [],
-            "confidence": "Low",
-        }
+        status("VoidHawk — starting at the scan phase (recon already done by IntelForge)")
+        graph = create_agent_graph()
+        validation_summary = ""
+        logged_titles: set[str] = set()
+        run_observations: list[dict[str, Any]] = []
+        run_findings: list[dict[str, Any]] = []
 
-    memory.close()
+        for event in graph.stream(
+            initial_state, config={"recursion_limit": voidhawk_config.recursion_limit}
+        ):
+            for node_name, state_updates in event.items():
+                status(f"VoidHawk [{node_name}]")
+                for message in state_updates.get("messages", []):
+                    status(f"  {message}")
+
+                if "observations" in state_updates:
+                    clean_res = state_updates.get("clean_result", {})
+                    for obs in state_updates["observations"]:
+                        memory.log_observation(
+                            obs.get("target"),
+                            obs.get("tool"),
+                            obs.get("output"),
+                            clean_result=obs.get("clean_result") or clean_res,
+                        )
+                        run_observations.append(obs)
+
+                if "validated_findings" in state_updates:
+                    for finding in state_updates["validated_findings"]:
+                        title = finding.get("title", "Unknown Finding")
+                        if title in logged_titles:
+                            continue
+                        logged_titles.add(title)
+                        memory.log_finding(
+                            target=finding.get("target", target),
+                            vulnerability=title,
+                            details=finding,
+                            severity=finding.get("severity", "Unknown"),
+                            cvss_score=float(finding.get("cvss_score", 0) or 0),
+                            validated=True,
+                        )
+                        run_findings.append(finding)
+
+                if state_updates.get("validation_summary"):
+                    validation_summary = state_updates["validation_summary"]
+
+        memory.close_session(session_id)
+        good(f"VoidHawk run complete ({len(run_findings)} confirmed finding(s))")
+
+        # 5. VoidHawk's own reporters — CVSS-scored PDF/HTML/Markdown.
+        status(f"Writing VoidHawk report(s) ({report_format})")
+        report_paths = _generate_reports(
+            voidhawk_config.memory_agent_db_path,
+            f"darkintel_report_{session_id[:8]}",
+            report_format,
+            validation_summary,
+        )
+        good(f"Report(s) written: {', '.join(str(p) for p in report_paths)}")
+
+        # 6. Dragon — chains VoidHawk's confirmed findings into an entry-point narrative.
+        # A provider/network failure here must not discard the reports already
+        # written in step 5, so this is deliberately broader than the parse-error
+        # handling inside dragon.synthesize itself.
+        status("Dragon — synthesizing the exploitation path")
+        try:
+            attack_path = dragon.synthesize(
+                dragon_model(),
+                confirmed_findings=run_findings,
+                command_history=_format_command_history(run_observations),
+                nmap_summary=state.get_nmap_summary(),
+            )
+        except Exception as exc:
+            attack_path = {
+                "entry_point": "",
+                "attack_narrative": f"Dragon failed: {exc}",
+                "steps": [],
+                "confidence": "Low",
+            }
+        if attack_path.get("entry_point"):
+            good(f"Dragon entry point: {attack_path['entry_point']}")
+        else:
+            status(f"Dragon: {attack_path['attack_narrative']}")
+    finally:
+        memory.close()
 
     return {
         "session_id": session_id,
